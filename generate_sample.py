@@ -87,9 +87,17 @@ for i in range(N):
     selected_cities = "|".join(np.random.choice(cities, size=n_cities, replace=False,
                                                  p=city_weights).tolist())
 
-    # Multinational more likely for MNC sponsors and later years
-    multi_prob = 0.4 if origin == "MNC" else (0.1 if year < 2018 else 0.15)
-    is_multi = bool(np.random.random() < multi_prob)
+
+    # Region assignment — weighted to reflect real landscape
+    # China: all trials (this is China-focused), US: ~60%, EU: ~45%
+    # MNCs more likely to be in all regions; Chinese biotech mostly China-only
+    in_china = True
+    in_us    = bool(np.random.random() < (0.65 if origin == "MNC" else 0.20))
+    in_eu    = bool(np.random.random() < (0.50 if origin == "MNC" else 0.10))
+    region_list = ["China"]
+    if in_us: region_list.append("US")
+    if in_eu: region_list.append("EU")
+    regions_str = "|".join(sorted(region_list))
 
     rows.append({
         "nct_id": f"NCT{10000000 + i}",
@@ -107,7 +115,11 @@ for i in range(N):
         "sponsor_class": "INDUSTRY" if origin in ["Chinese Biotech/Pharma", "MNC"] else "OTHER",
         "sponsor_origin": origin,
         "china_cities": selected_cities,
-        "is_multinational": is_multi,
+        "is_multinational": in_us or in_eu,
+        "in_china": in_china,
+        "in_us": in_us,
+        "in_eu": in_eu,
+        "regions": regions_str,
         "start_date": f"{year}-01-01",
         "start_year": year,
         "primary_completion_date": f"{year + 3}-01-01",
