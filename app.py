@@ -84,13 +84,15 @@ def load_data():
     return df
 
 
-def run_pipeline():
-    with st.spinner("Fetching data from ClinicalTrials.gov... (~3-5 min)"):
+def run_pipeline(show_progress: bool = True) -> bool:
+    """Run fetch + clean pipeline. Returns True on success."""
+    spin = st.spinner if show_progress else _null_spinner
+    with spin("Fetching data from ClinicalTrials.gov... (~3–5 min)"):
         result = subprocess.run([sys.executable, "src/fetch.py"], capture_output=True, text=True)
         if result.returncode != 0:
             st.error(f"Fetch failed:\n{result.stderr}")
             return False
-    with st.spinner("Cleaning and classifying data..."):
+    with spin("Cleaning and classifying data..."):
         result = subprocess.run(
             [sys.executable, "-c",
              "import sys; sys.path.insert(0,'src'); from clean import clean; clean()"],
@@ -103,16 +105,45 @@ def run_pipeline():
     return True
 
 
+from contextlib import contextmanager
+@contextmanager
+def _null_spinner(msg=""):
+    yield
+
+
 # ── Load data — must be before sidebar so st.stop() is unconditional ───────
 df_raw = load_data()
 
 if df_raw is None:
     st.title("China Oncology Clinical Trial Landscape")
-    st.warning("No data found. Generate sample data or fetch from ClinicalTrials.gov.")
-    if st.button("🚀 Generate Sample Data (instant demo)", type="primary"):
-        subprocess.run([sys.executable, "generate_sample.py"], check=True)
-        st.cache_data.clear()
-        st.rerun()
+
+    # Auto-fetch on first load (e.g. fresh Streamlit Cloud deployment).
+    # Guard with session_state so a failed fetch doesn't loop forever.
+    if not st.session_state.get("auto_fetch_attempted"):
+        st.session_state["auto_fetch_attempted"] = True
+        st.info(
+            "No local data found — fetching from ClinicalTrials.gov now. "
+            "This takes 3–5 minutes on first deployment."
+        )
+        if run_pipeline():
+            st.rerun()
+        else:
+            st.error(
+                "Auto-fetch failed. Check that ClinicalTrials.gov is reachable, "
+                "then click Retry below."
+            )
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("🔄 Retry fetch from ClinicalTrials.gov", type="primary"):
+            st.session_state.pop("auto_fetch_attempted", None)
+            st.rerun()
+    with col_b:
+        if st.button("🧪 Load sample data instead"):
+            subprocess.run([sys.executable, "generate_sample.py"], check=True)
+            st.cache_data.clear()
+            st.session_state.pop("auto_fetch_attempted", None)
+            st.rerun()
     st.stop()
 
 
