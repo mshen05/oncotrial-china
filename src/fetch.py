@@ -50,6 +50,8 @@ FIELDS = [
     "protocolSection.sponsorCollaboratorsModule.leadSponsor",
     "protocolSection.sponsorCollaboratorsModule.collaborators",
     "protocolSection.contactsLocationsModule.locations",
+    # MeSH annotations pre-computed by ClinicalTrials.gov
+    "derivedSection.conditionBrowseModule.meshes",
 ]
 
 
@@ -123,6 +125,14 @@ def parse_trial(study: dict) -> dict:
     sponsor_mod = ps.get("sponsorCollaboratorsModule", {})
     loc_mod = ps.get("contactsLocationsModule", {})
 
+    # MeSH IDs from ClinicalTrials.gov's own annotation
+    derived = study.get("derivedSection", {})
+    mesh_entries = derived.get("conditionBrowseModule", {}).get("meshes", [])
+    mesh_ids = [m.get("id", "") for m in mesh_entries if m.get("id")]
+    mesh_terms = [m.get("term", "") for m in mesh_entries if m.get("term")]
+    mesh_ids_str = "|".join(mesh_ids)
+    mesh_terms_str = "|".join(mesh_terms)
+
     # Phases
     phases = design_mod.get("phases", [])
     phase_str = "|".join(phases) if phases else "N/A"
@@ -180,6 +190,8 @@ def parse_trial(study: dict) -> dict:
         "start_year": start_year,
         "primary_completion_date": primary_completion,
         "enrollment": enrollment,
+        "mesh_ids": mesh_ids_str,
+        "mesh_terms": mesh_terms_str,
     }
 
 

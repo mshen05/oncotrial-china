@@ -12,6 +12,7 @@ Key transformations:
 import pandas as pd
 import re
 from pathlib import Path
+from mesh_map import classify_by_mesh, coverage_report
 
 # ── Cancer type normalization ──────────────────────────────────────────────
 # Maps keywords in 'conditions' text to a canonical cancer type.
@@ -92,7 +93,8 @@ ACADEMIC_PATTERNS = r"""
 """
 
 
-def classify_cancer_type(conditions_str: str) -> str:
+def classify_cancer_type_regex(conditions_str: str) -> str:
+    """Regex fallback — used only when MeSH lookup fails."""
     if not isinstance(conditions_str, str):
         return "Unknown"
     text = conditions_str.lower()
@@ -100,6 +102,22 @@ def classify_cancer_type(conditions_str: str) -> str:
         if re.search(pattern, text, re.IGNORECASE | re.VERBOSE):
             return label
     return "Unknown"
+
+
+def classify_cancer_type(mesh_ids_str: str, conditions_str: str) -> tuple[str, bool]:
+    """
+    Returns (cancer_type, mesh_classified).
+    Tries MeSH lookup first, falls back to regex on free-text conditions.
+    """
+    # Step 1: MeSH lookup
+    if isinstance(mesh_ids_str, str) and mesh_ids_str.strip():
+        ids = [i.strip() for i in mesh_ids_str.split("|") if i.strip()]
+        result = classify_by_mesh(ids)
+        if result:
+            return result, True
+
+    # Step 2: regex fallback on free-text conditions
+    return classify_cancer_type_regex(conditions_str), False
 
 
 def classify_modality(interv_types: str, interv_names: str) -> str:
@@ -146,8 +164,14 @@ def clean(input_path: str = "data/raw_trials.csv",
     # Drop rows with no NCT ID or status
     df = df.dropna(subset=["nct_id", "status"])
 
-    # Normalize cancer type
-    df["cancer_type"] = df["conditions"].apply(classify_cancer_type)
+    # Normalize cancer type — MeSH first, regex fallback
+    mesh_col = df["mesh_ids"] if "mesh_ids" in df.columns else pd.Series([""] * len(df))
+    results = [
+        classify_cancer_type(m, c)
+        for m, c in zip(mesh_col, df["conditions"])
+    ]
+    df["cancer_type"] = [r[0] for r in results]
+    df["mesh_classified"] = [r[1] for r in results]
 
     # Classify modality
     df["modality"] = df.apply(
@@ -181,6 +205,7 @@ def clean(input_path: str = "data/raw_trials.csv",
 
     df.to_csv(output_path, index=False)
     print(f"Saved to {output_path}")
+    coverage_report(df)
     return df
 
 
