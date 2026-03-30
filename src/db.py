@@ -156,51 +156,41 @@ def ensure_schema(engine: Engine) -> None:
 
 # ── Write ──────────────────────────────────────────────────────────────────
 
-def write_trials(df: pd.DataFrame, engine: Engine, chunk_size: int = 5000) -> int:
+def write_trials(df: pd.DataFrame, engine: Engine, chunk_size: int = 500) -> int:
     """
     Bulk-upsert trial records into the database.
 
-    Strategy:
-    - Write the full DataFrame to a staging table in chunks using
-      pandas to_sql (which uses executemany under the hood, much faster
-      than row-by-row SQLAlchemy execute).
-    - Then run a single INSERT INTO trials ... ON CONFLICT (nct_id) DO UPDATE
-      from the staging table.
-    - Drop the staging table.
-
-    This handles 50k rows in ~5-10 seconds against Supabase instead of hanging.
+    SQLite: pandas to_sql staging table (local, fast, no network latency).
+    PostgreSQL: psycopg2 execute_values in small chunks — bypasses SQLAlchemy
+    batching entirely, each chunk is a single round-trip with ~500 rows,
+    well under Supabase statement timeout and efficient over the network.
     """
     if df.empty:
         print("No data to write.")
         return 0
 
-    # Ensure all expected columns exist
     for col in UPSERT_COLS:
         if col not in df.columns:
             df[col] = None
 
     subset = df[UPSERT_COLS].copy()
 
-    # Boolean columns: ensure they're native Python bool, not numpy bool
     for col in ["in_china", "in_us", "in_eu", "is_multinational",
                 "is_active", "mesh_classified"]:
         if col in subset.columns:
             subset[col] = subset[col].astype(bool)
 
-    dialect = engine.dialect.name
+    # Replace NaN with None so DB gets NULL not NaN
+    subset = subset.where(pd.notnull(subset), other=None)
 
-    print(f"Writing {len(subset):,} trials to database ({dialect})...")
+    dialect = engine.dialect.name
+    total   = len(subset)
+    print(f"Writing {total:,} trials to database ({dialect})...", flush=True)
 
     if dialect == "sqlite":
-        # SQLite: pandas to_sql with replace handles this simply
-        # Use a staging table then INSERT OR REPLACE into main
-        subset.to_sql(
-            "trials_staging", engine,
-            if_exists="replace", index=False,
-            chunksize=chunk_size,
-        )
-        cols       = ", ".join(UPSERT_COLS)
-        src_cols   = ", ".join(f"s.{c}" for c in UPSERT_COLS)
+        subset.to_sql("trials_staging", engine, if_exists="replace", index=False)
+        cols     = ", ".join(UPSERT_COLS)
+        src_cols = ", ".join(f"s.{c}" for c in UPSERT_COLS)
         with engine.begin() as conn:
             conn.execute(text(f"""
                 INSERT OR REPLACE INTO trials ({cols})
@@ -209,33 +199,46 @@ def write_trials(df: pd.DataFrame, engine: Engine, chunk_size: int = 5000) -> in
             conn.execute(text("DROP TABLE IF EXISTS trials_staging"))
 
     else:
-        # PostgreSQL (Supabase): stage then upsert
-        subset.to_sql(
-            "trials_staging", engine,
-            if_exists="replace", index=False,
-            chunksize=chunk_size,
-            method="multi",   # sends multiple rows per INSERT statement
-        )
+        # PostgreSQL: use psycopg2 execute_values directly for speed
+        from psycopg2.extras import execute_values
 
-        cols      = ", ".join(UPSERT_COLS)
-        src_cols  = ", ".join(f"s.{c}" for c in UPSERT_COLS)
+        cols       = ", ".join(UPSERT_COLS)
         update_set = ", ".join(
             f"{c} = EXCLUDED.{c}"
             for c in UPSERT_COLS if c != "nct_id"
         )
+        placeholders = "(" + ", ".join(["%s"] * len(UPSERT_COLS)) + ")"
+        sql = f"""
+            INSERT INTO trials ({cols}) VALUES %s
+            ON CONFLICT (nct_id) DO UPDATE
+            SET {update_set}, updated_at = CURRENT_TIMESTAMP
+        """
 
-        with engine.begin() as conn:
-            conn.execute(text(f"""
-                INSERT INTO trials ({cols})
-                SELECT {src_cols} FROM trials_staging s
-                ON CONFLICT (nct_id) DO UPDATE
-                SET {update_set}, updated_at = CURRENT_TIMESTAMP
-            """))
-            conn.execute(text("DROP TABLE IF EXISTS trials_staging"))
+        # Get raw psycopg2 connection from SQLAlchemy engine
+        raw_conn = engine.raw_connection()
+        try:
+            raw_conn.autocommit = False
+            cursor = raw_conn.cursor()
+            cursor.execute("SET statement_timeout = 0")
 
-    n = len(subset)
-    print(f"Done. {n:,} rows upserted.")
-    return n
+            rows = [tuple(r) for r in subset.itertuples(index=False, name=None)]
+
+            for lo in range(0, total, chunk_size):
+                chunk = rows[lo : lo + chunk_size]
+                execute_values(cursor, sql, chunk, page_size=chunk_size)
+                hi = min(lo + chunk_size, total)
+                print(f"  {hi:,} / {total:,}", flush=True)
+
+            raw_conn.commit()
+        except Exception:
+            raw_conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            raw_conn.close()
+
+    print(f"Done. {total:,} rows upserted.")
+    return total
 
 
 # ── Read ───────────────────────────────────────────────────────────────────
