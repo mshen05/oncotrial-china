@@ -13,6 +13,7 @@ import pandas as pd
 import re
 from pathlib import Path
 from mesh_map import classify_by_mesh, coverage_report
+from sponsor_consolidation import apply_consolidation, consolidation_report
 
 # ── Cancer type normalization ──────────────────────────────────────────────
 # Maps keywords in 'conditions' text to a canonical cancer type.
@@ -204,6 +205,10 @@ def clean(input_path: str = "data/raw_trials.csv",
     print(f"Sponsor origin: {df['sponsor_origin'].value_counts().to_dict()}")
 
     df.to_csv(output_path, index=False)
+    # Sponsor consolidation
+    df = apply_consolidation(df)
+    consolidation_report(df)
+
     print(f"Saved to {output_path}")
     coverage_report(df)
     return df
