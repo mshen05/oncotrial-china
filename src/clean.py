@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from mesh_map import classify_by_mesh, coverage_report
 from sponsor_consolidation import apply_consolidation, consolidation_report
+from db import get_engine, ensure_schema, write_trials
 
 # ── Cancer type normalization ──────────────────────────────────────────────
 # Maps keywords in 'conditions' text to a canonical cancer type.
@@ -194,6 +195,19 @@ def clean(input_path: str = "data/raw_trials.csv",
     active_statuses = {"RECRUITING", "ACTIVE_NOT_RECRUITING", "NOT_YET_RECRUITING"}
     df["is_active"] = df["status"].isin(active_statuses)
 
+    # Status display label (duplicated here so DB has it without app dependency)
+    STATUS_LABELS = {
+        "RECRUITING": "Recruiting",
+        "ACTIVE_NOT_RECRUITING": "Active, not recruiting",
+        "NOT_YET_RECRUITING": "Not yet recruiting",
+        "COMPLETED": "Completed",
+        "TERMINATED": "Terminated",
+        "SUSPENDED": "Suspended",
+        "WITHDRAWN": "Withdrawn",
+        "ENROLLING_BY_INVITATION": "Enrolling by invitation",
+    }
+    df["status_label"] = df["status"].map(STATUS_LABELS).fillna(df["status"])
+
     # Start year as int
     df["start_year"] = pd.to_numeric(df["start_year"], errors="coerce")
 
@@ -211,6 +225,15 @@ def clean(input_path: str = "data/raw_trials.csv",
 
     print(f"Saved to {output_path}")
     coverage_report(df)
+
+    # Write to database (Supabase in prod, SQLite locally)
+    try:
+        engine = get_engine()
+        ensure_schema(engine)
+        write_trials(df, engine)
+    except Exception as e:
+        print(f"Warning: DB write failed ({e}). CSV still saved.")
+
     return df
 
 
