@@ -32,10 +32,14 @@ st.markdown("""
     }
     .insight-box {
         background: #e8f4f8;
+        color: #1a1a2e;
         border-radius: 6px;
         padding: 12px 16px;
         margin: 8px 0;
         font-size: 0.9em;
+    }
+    .insight-box strong, .insight-box b {
+        color: #1a1a2e;
     }
     h1 { color: #1a1a2e; }
     .stPlotlyChart { border-radius: 8px; }
